@@ -18,6 +18,8 @@ import 'package:uuid/uuid.dart';
 const statusCodesNewFile = [HttpStatus.ok, HttpStatus.accepted];
 const statusCodesFileNotChanged = [HttpStatus.notModified];
 
+typedef FileDecrypt = String Function(String body, Map<String, String> headers);
+
 class WebHelper {
   WebHelper(this._store, FileService fileFetcher)
       : _memCache = {},
@@ -28,15 +30,18 @@ class WebHelper {
   final Map<String, BehaviorSubject<FileResponse>> _memCache;
 
   ///Download the file from the url
-  Stream<FileResponse> downloadFile(String url,
-      {Map<String, String> authHeaders, bool ignoreMemCache = false}) {
+  Stream<FileResponse> downloadFile(String url, {
+    Map<String, String> authHeaders,
+    bool ignoreMemCache = false,
+    FileDecrypt decrypt,
+  }) {
     if (!_memCache.containsKey(url) || ignoreMemCache) {
       var subject = BehaviorSubject<FileResponse>();
       _memCache[url] = subject;
 
       unawaited(() async {
         try {
-          await for (var result in _updateFile(url, authHeaders: authHeaders)) {
+          await for (var result in _updateFile(url, authHeaders: authHeaders, decrypt: decrypt)) {
             subject.add(result);
           }
         } catch (e, stackTrace) {
@@ -51,19 +56,23 @@ class WebHelper {
   }
 
   ///Download the file from the url
-  Stream<FileResponse> _updateFile(String url,
-      {Map<String, String> authHeaders}) async* {
+  Stream<FileResponse> _updateFile(String url, {
+    Map<String, String> authHeaders,
+    FileDecrypt decrypt,
+  }) async* {
     var cacheObject = await _store.retrieveCacheData(url);
     cacheObject ??= CacheObject(url);
     final response = await _download(cacheObject, authHeaders);
-    yield* _manageResponse(cacheObject, response);
+    yield* _manageResponse(cacheObject, response, decrypt);
 
     final file = (await _store.fileDir).childFile(cacheObject.relativePath);
     yield FileInfo(file, FileSource.Online, cacheObject.validTill, url);
   }
 
   Future<FileServiceResponse> _download(
-      CacheObject cacheObject, Map<String, String> authHeaders) {
+      CacheObject cacheObject,
+      Map<String, String> authHeaders,
+  ) {
     final headers = <String, String>{};
     if (authHeaders != null) {
       headers.addAll(authHeaders);
@@ -73,11 +82,15 @@ class WebHelper {
       headers[HttpHeaders.ifNoneMatchHeader] = cacheObject.eTag;
     }
 
+    print('--- requesting file ${cacheObject.url} headers=$headers');
     return _fileFetcher.get(cacheObject.url, headers: headers);
   }
 
   Stream<DownloadProgress> _manageResponse(
-      CacheObject cacheObject, FileServiceResponse response) async* {
+      CacheObject cacheObject,
+      FileServiceResponse response,
+      FileDecrypt decrypt,
+  ) async* {
     final hasNewFile = statusCodesNewFile.contains(response.statusCode);
     final keepOldFile = statusCodesFileNotChanged.contains(response.statusCode);
     if (!hasNewFile && !keepOldFile) {
@@ -92,7 +105,7 @@ class WebHelper {
     var newCacheFile = cacheObject.relativePath;
     _setDataFromHeaders(cacheObject, response);
     if (statusCodesNewFile.contains(response.statusCode)) {
-      await for (var progress in _saveFile(cacheObject, response)) {
+      await for (var progress in _saveFile(cacheObject, response, decrypt)) {
         yield DownloadProgress(
             cacheObject.url, response.contentLength, progress);
       }
@@ -121,12 +134,17 @@ class WebHelper {
     cacheObject.relativePath ??= '${Uuid().v1()}$fileExtension';
   }
 
-  Stream<int> _saveFile(CacheObject cacheObject, FileServiceResponse response) {
+  Stream<int> _saveFile(
+      CacheObject cacheObject,
+      FileServiceResponse response,
+      FileDecrypt decrypt,
+  ) {
     var receivedBytesResultController = StreamController<int>();
     unawaited(_saveFileAndPostUpdates(
       receivedBytesResultController,
       cacheObject,
       response,
+      decrypt,
     ));
     return receivedBytesResultController.stream;
   }
@@ -134,7 +152,9 @@ class WebHelper {
   Future _saveFileAndPostUpdates(
       StreamController<int> receivedBytesResultController,
       CacheObject cacheObject,
-      FileServiceResponse response) async {
+      FileServiceResponse response,
+      FileDecrypt decrypt,
+  ) async {
     final basePath = await _store.fileDir;
 
     final file = basePath.childFile(cacheObject.relativePath);
@@ -150,6 +170,14 @@ class WebHelper {
         receivedBytesResultController.add(receivedBytes);
         return s;
       }).pipe(sink);
+
+      if (decrypt != null && response is HttpGetResponse) {
+        final content = file.readAsStringSync();
+        print('--- received file ${response.url} [${response.statusCode}] headers=${response.headers} content=$content');
+        final decrypted = decrypt(content, response.headers);
+        print('--- received file decrypted: $decrypted');
+        file.writeAsStringSync(decrypted);
+      }
     } catch (e, stacktrace) {
       receivedBytesResultController.addError(e, stacktrace);
     }

@@ -113,15 +113,18 @@ abstract class BaseCacheManager {
   /// When a file is cached it is return directly, when it is too old the file is
   /// downloaded in the background. When a cached file is not available the
   /// newly downloaded file is returned.
-  Future<File> getSingleFile(String url, {Map<String, String> headers}) async {
+  Future<File> getSingleFile(String url, {
+    Map<String, String> headers,
+    FileDecrypt decrypt,
+  }) async {
     final cacheFile = await getFileFromCache(url);
     if (cacheFile != null) {
       if (cacheFile.validTill.isBefore(DateTime.now())) {
-        unawaited(downloadFile(url, authHeaders: headers));
+        unawaited(downloadFile(url, authHeaders: headers, decrypt: decrypt));
       }
       return cacheFile.file;
     }
-    return (await downloadFile(url, authHeaders: headers)).file;
+    return (await downloadFile(url, authHeaders: headers, decrypt: decrypt)).file;
   }
 
   /// Get the file from the cache and/or online, depending on availability and age.
@@ -190,10 +193,13 @@ abstract class BaseCacheManager {
   }
 
   ///Download the file and add to cache
-  Future<FileInfo> downloadFile(String url,
-      {Map<String, String> authHeaders, bool force = false}) async {
+  Future<FileInfo> downloadFile(String url, {
+    Map<String, String> authHeaders,
+    bool force = false,
+    FileDecrypt decrypt,
+  }) async {
     var fileResponse = await _webHelper
-        .downloadFile(url, authHeaders: authHeaders, ignoreMemCache: force)
+        .downloadFile(url, authHeaders: authHeaders, ignoreMemCache: force, decrypt: decrypt)
         .firstWhere((r) => r is FileInfo);
     return fileResponse as FileInfo;
   }
