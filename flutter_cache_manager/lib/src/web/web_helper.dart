@@ -31,42 +31,43 @@ class WebHelper {
 
   ///Download the file from the url
   Stream<FileResponse> downloadFile(String url, {
+    String key,
     Map<String, String> authHeaders,
     bool ignoreMemCache = false,
     FileDecrypt decrypt,
   }) {
-    if (!_memCache.containsKey(url) || ignoreMemCache) {
+    key ??= url;
+    if (!_memCache.containsKey(key) || ignoreMemCache) {
       var subject = BehaviorSubject<FileResponse>();
-      _memCache[url] = subject;
+      _memCache[key] = subject;
 
       unawaited(() async {
         try {
-          await for (var result in _updateFile(url, authHeaders: authHeaders, decrypt: decrypt)) {
+          await for (var result in _updateFile(url, key, authHeaders: authHeaders, decrypt: decrypt)) {
             subject.add(result);
           }
         } catch (e, stackTrace) {
           subject.addError(e, stackTrace);
         } finally {
           await subject.close();
-          _memCache.remove(url);
+          _memCache.remove(key);
         }
       }());
     }
-    return _memCache[url].stream;
+    return _memCache[key].stream;
   }
 
   ///Download the file from the url
-  Stream<FileResponse> _updateFile(String url, {
+  Stream<FileResponse> _updateFile(String url, String key, {
     Map<String, String> authHeaders,
     FileDecrypt decrypt,
   }) async* {
-    var cacheObject = await _store.retrieveCacheData(url);
-    cacheObject ??= CacheObject(url);
+    var cacheObject = await _store.retrieveCacheData(key);
+    cacheObject = cacheObject == null
+        ? CacheObject(url, key: key)
+        : cacheObject.copyWith(url: url);
     final response = await _download(cacheObject, authHeaders);
     yield* _manageResponse(cacheObject, response, decrypt);
-
-    final file = (await _store.fileDir).childFile(cacheObject.relativePath);
-    yield FileInfo(file, FileSource.Online, cacheObject.validTill, url);
   }
 
   Future<FileServiceResponse> _download(
@@ -82,11 +83,10 @@ class WebHelper {
       headers[HttpHeaders.ifNoneMatchHeader] = cacheObject.eTag;
     }
 
-    print('--- requesting file ${cacheObject.url} headers=$headers');
     return _fileFetcher.get(cacheObject.url, headers: headers);
   }
 
-  Stream<DownloadProgress> _manageResponse(
+  Stream<FileResponse> _manageResponse(
       CacheObject cacheObject,
       FileServiceResponse response,
       FileDecrypt decrypt,
@@ -101,37 +101,52 @@ class WebHelper {
       );
     }
 
-    final oldCacheFile = cacheObject.relativePath;
-    var newCacheFile = cacheObject.relativePath;
-    _setDataFromHeaders(cacheObject, response);
+    final oldCacheObject = cacheObject;
+    var newCacheObject = _setDataFromHeaders(cacheObject, response);
     if (statusCodesNewFile.contains(response.statusCode)) {
-      await for (var progress in _saveFile(cacheObject, response, decrypt)) {
+      int savedBytes;
+      await for (var progress in _saveFile(newCacheObject, response, decrypt)) {
+        savedBytes = progress;
         yield DownloadProgress(
             cacheObject.url, response.contentLength, progress);
       }
-      newCacheFile = cacheObject.relativePath;
+      newCacheObject = newCacheObject.copyWith(length: savedBytes);
     }
 
-    unawaited(_store.putFile(cacheObject).then((_) {
-      if (newCacheFile != oldCacheFile) {
-        _removeOldFile(oldCacheFile);
+    unawaited(_store.putFile(newCacheObject).then((_) {
+      if (newCacheObject.relativePath != oldCacheObject.relativePath) {
+        _removeOldFile(oldCacheObject.relativePath);
       }
     }));
+
+    final file = (await _store.fileDir).childFile(newCacheObject.relativePath);
+    yield FileInfo(
+      file,
+      FileSource.Online,
+      newCacheObject.validTill,
+      newCacheObject.url,
+    );
   }
 
-  void _setDataFromHeaders(
+  CacheObject _setDataFromHeaders(
       CacheObject cacheObject, FileServiceResponse response) {
-    cacheObject.validTill = response.validTill;
-    cacheObject.eTag = response.eTag;
     final fileExtension = response.fileExtension;
+    var filePath = cacheObject.relativePath;
 
-    final oldPath = cacheObject.relativePath;
-    if (oldPath != null && !oldPath.endsWith(fileExtension)) {
-      unawaited(_removeOldFile(oldPath));
-      cacheObject.relativePath = null;
+    if (filePath != null &&
+        !statusCodesFileNotChanged.contains(response.statusCode)) {
+      if (!filePath.endsWith(fileExtension)) {
+        //Delete old file directly when file extension changed
+        unawaited(_removeOldFile(filePath));
+      }
+      // Store new file on different path
+      filePath = null;
     }
-
-    cacheObject.relativePath ??= '${Uuid().v1()}$fileExtension';
+    return cacheObject.copyWith(
+      relativePath: filePath ?? '${Uuid().v1()}$fileExtension',
+      validTill: response.validTill,
+      eTag: response.eTag,
+    );
   }
 
   Stream<int> _saveFile(

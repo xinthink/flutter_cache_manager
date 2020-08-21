@@ -115,16 +115,18 @@ abstract class BaseCacheManager {
   /// newly downloaded file is returned.
   Future<File> getSingleFile(String url, {
     Map<String, String> headers,
+    String key,
     FileDecrypt decrypt,
   }) async {
-    final cacheFile = await getFileFromCache(url);
+    key ??= url;
+    final cacheFile = await getFileFromCache(key);
     if (cacheFile != null) {
       if (cacheFile.validTill.isBefore(DateTime.now())) {
-        unawaited(downloadFile(url, authHeaders: headers, decrypt: decrypt));
+        unawaited(downloadFile(url, key: key, authHeaders: headers, decrypt: decrypt));
       }
       return cacheFile.file;
     }
-    return (await downloadFile(url, authHeaders: headers, decrypt: decrypt)).file;
+    return (await downloadFile(url, key: key, authHeaders: headers, decrypt: decrypt)).file;
   }
 
   /// Get the file from the cache and/or online, depending on availability and age.
@@ -132,8 +134,13 @@ abstract class BaseCacheManager {
   /// The files are returned as stream. First the cached file if available, when the
   /// cached file is too old the newly downloaded file is returned afterwards.
   @Deprecated('Prefer to use the new getFileStream method')
-  Stream<FileInfo> getFile(String url, {Map<String, String> headers}) {
-    return getFileStream(url, withProgress: false).map((r) => r as FileInfo);
+  Stream<FileInfo> getFile(String url,
+      {String key, Map<String, String> headers}) {
+    return getFileStream(
+      url,
+      key: key,
+      withProgress: false,
+    ).map((r) => r as FileInfo);
   }
 
   /// Get the file from the cache and/or online, depending on availability and age.
@@ -148,17 +155,20 @@ abstract class BaseCacheManager {
   /// returned from the cache there will be no progress given, although the file
   /// might be outdated and a new file is being downloaded in the background.
   Stream<FileResponse> getFileStream(String url,
-      {Map<String, String> headers, bool withProgress}) {
+      {String key, Map<String, String> headers, bool withProgress}) {
+    key ??= url;
     final streamController = StreamController<FileResponse>();
-    _pushFileToStream(streamController, url, headers, withProgress ?? false);
+    _pushFileToStream(
+        streamController, url, key, headers, withProgress ?? false);
     return streamController.stream;
   }
 
   Future<void> _pushFileToStream(StreamController streamController, String url,
-      Map<String, String> headers, bool withProgress) async {
+      String key, Map<String, String> headers, bool withProgress) async {
+    key ??= url;
     FileInfo cacheFile;
     try {
-      cacheFile = await getFileFromCache(url);
+      cacheFile = await getFileFromCache(key);
       if (cacheFile != null) {
         streamController.add(cacheFile);
         withProgress = false;
@@ -170,7 +180,7 @@ abstract class BaseCacheManager {
     if (cacheFile == null || cacheFile.validTill.isBefore(DateTime.now())) {
       try {
         await for (var response
-            in _webHelper.downloadFile(url, authHeaders: headers)) {
+            in _webHelper.downloadFile(url, key: key, authHeaders: headers)) {
           if (response is DownloadProgress && withProgress) {
             streamController.add(response);
           }
@@ -194,24 +204,26 @@ abstract class BaseCacheManager {
 
   ///Download the file and add to cache
   Future<FileInfo> downloadFile(String url, {
+    String key,
     Map<String, String> authHeaders,
     bool force = false,
     FileDecrypt decrypt,
   }) async {
+    key ??= url;
     var fileResponse = await _webHelper
-        .downloadFile(url, authHeaders: authHeaders, ignoreMemCache: force, decrypt: decrypt)
+        .downloadFile(url, key: key, authHeaders: authHeaders, ignoreMemCache: force, decrypt: decrypt)
         .firstWhere((r) => r is FileInfo);
     return fileResponse as FileInfo;
   }
 
   /// Get the file from the cache.
   /// Specify [ignoreMemCache] to force a re-read from the database
-  Future<FileInfo> getFileFromCache(String url,
+  Future<FileInfo> getFileFromCache(String key,
           {bool ignoreMemCache = false}) =>
-      _store.getFile(url, ignoreMemCache: ignoreMemCache);
+      _store.getFile(key, ignoreMemCache: ignoreMemCache);
 
   ///Returns the file from memory if it has already been fetched
-  FileInfo getFileFromMemory(String url) => _store.getFileFromMemory(url);
+  FileInfo getFileFromMemory(String key) => _store.getFileFromMemory(key);
 
   /// Put a file in the cache. It is recommended to specify the [eTag] and the
   /// [maxAge]. When [maxAge] is passed and the eTag is not set the file will
@@ -222,15 +234,20 @@ abstract class BaseCacheManager {
   Future<File> putFile(
     String url,
     Uint8List fileBytes, {
+    String key,
     String eTag,
     Duration maxAge = const Duration(days: 30),
     String fileExtension = 'file',
   }) async {
-    var cacheObject = await _store.retrieveCacheData(url);
-    cacheObject ??=
-        CacheObject(url, relativePath: '${Uuid().v1()}.$fileExtension');
-    cacheObject.validTill = DateTime.now().add(maxAge);
-    cacheObject.eTag = eTag;
+    key ??= url;
+    var cacheObject = await _store.retrieveCacheData(key);
+    cacheObject ??= CacheObject(url,
+        key: key, relativePath: '${Uuid().v1()}.$fileExtension');
+
+    cacheObject = cacheObject.copyWith(
+      validTill: DateTime.now().add(maxAge),
+      eTag: eTag,
+    );
 
     final file = (await _fileDir).childFile(cacheObject.relativePath);
     final folder = file.parent;
@@ -243,8 +260,8 @@ abstract class BaseCacheManager {
   }
 
   /// Remove a file from the cache
-  Future<void> removeFile(String url) async {
-    final cacheObject = await _store.retrieveCacheData(url);
+  Future<void> removeFile(String key) async {
+    final cacheObject = await _store.retrieveCacheData(key);
     if (cacheObject != null) {
       await _store.removeCachedFile(cacheObject);
     }

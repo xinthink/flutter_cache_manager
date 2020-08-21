@@ -8,35 +8,65 @@ import 'package:clock/clock.dart';
 class CacheObject {
   static const columnId = '_id';
   static const columnUrl = 'url';
+  static const columnKey = 'key';
   static const columnPath = 'relativePath';
   static const columnETag = 'eTag';
   static const columnValidTill = 'validTill';
   static const columnTouched = 'touched';
+  static const columnLength = 'length';
 
-  CacheObject(this.url,
-      {this.relativePath, this.validTill, this.eTag, this.id});
+  CacheObject(
+    this.url, {
+    String key,
+    this.relativePath,
+    this.validTill,
+    this.eTag,
+    this.id,
+    this.length,
+  }) : key = key ?? url;
 
   CacheObject.fromMap(Map<String, dynamic> map)
       : id = map[columnId] as int,
         url = map[columnUrl] as String,
+        key = map[columnKey] as String ?? map[columnUrl] as String,
         relativePath = map[columnPath] as String,
         validTill =
             DateTime.fromMillisecondsSinceEpoch(map[columnValidTill] as int),
-        eTag = map[columnETag] as String;
+        eTag = map[columnETag] as String,
+        length = map[columnLength] as int;
 
-  int id;
-  String url;
-  String relativePath;
-  DateTime validTill;
-  String eTag;
+  /// Internal ID used to represent this cache object
+  final int id;
+
+  /// The URL that was used to download the file
+  final String url;
+
+  /// The key used to identify the object in the cache.
+  ///
+  /// This key is optional and will default to [url] if not specified
+  final String key;
+
+  /// Where the cached file is stored
+  final String relativePath;
+
+  /// When this cached item becomes invalid
+  final DateTime validTill;
+
+  /// eTag provided by the server for cache expiry
+  final String eTag;
+
+  /// The length of the cached file
+  final int length;
 
   Map<String, dynamic> toMap() {
     final map = <String, dynamic>{
       columnUrl: url,
+      columnKey: key,
       columnPath: relativePath,
       columnETag: eTag,
       columnValidTill: validTill?.millisecondsSinceEpoch ?? 0,
-      columnTouched: clock.now().millisecondsSinceEpoch
+      columnTouched: clock.now().millisecondsSinceEpoch,
+      columnLength: length,
     };
     if (id != null) {
       map[columnId] = id;
@@ -46,5 +76,24 @@ class CacheObject {
 
   static List<CacheObject> fromMapList(List<Map<String, dynamic>> list) {
     return list.map((map) => CacheObject.fromMap(map)).toList();
+  }
+
+  CacheObject copyWith({
+    String url,
+    int id,
+    String relativePath,
+    DateTime validTill,
+    String eTag,
+    int length,
+  }) {
+    return CacheObject(
+      url ?? this.url,
+      id: id ?? this.id,
+      key: key,
+      relativePath: relativePath ?? this.relativePath,
+      validTill: validTill ?? this.validTill,
+      eTag: eTag ?? this.eTag,
+      length: length ?? this.length,
+    );
   }
 }
